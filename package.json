@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon src/index.ts",
-    "build": "tsc",
-    "start": "npm run build && node dist/index.js",
-    "test": "echo \"No tests specified\""
+  "dev": "nodemon src/index.ts",
+  "build": "tsc",
+  "start": "npm run build && node dist/index.js",
+  "postinstall": "prisma generate",
+  "test": "echo \"No tests specified\""
   },
   "keywords": [],
   "author": "",
