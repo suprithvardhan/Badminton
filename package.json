@@ -6,13 +6,9 @@
   "scripts": {
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "start": "npm run build && node dist/index.js",
-    "postinstall": "prisma generate",
-    "test": "echo \"No tests specified\""
+    "start": "node dist/index.js",
+    "postinstall": "prisma generate"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "@prisma/client": "^6.19.2",
     "bcrypt": "^6.0.0",
@@ -22,9 +18,7 @@
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
     "prisma": "^6.19.2",
-    "socket.io": "^4.8.3",
-    "typescript": "^5.9.3",
-    "ts-node": "^10.9.2"
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
@@ -32,6 +26,8 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.5.0",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "typescript": "^5.9.3",
+    "ts-node": "^10.9.2"
   }
 }
