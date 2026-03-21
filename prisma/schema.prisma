@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  player    Player?
+}
+
+model Player {
+  id             String             @id @default(uuid())
+  userId         String             @unique
+  user           User               @relation(fields: [userId], references: [id])
+  matchesPlayed  Int                @default(0)
+  wins           Int                @default(0)
+  losses         Int                @default(0)
+  smashPoints    Int                @default(0)
+  dropPoints     Int                @default(0)
+  errorsForced   Int                @default(0)
+  errorsCommitted Int               @default(0)
+  elo            Int                @default(1200)
+
+  participants   MatchParticipant[]
+  tournaments    TournamentPlayer[]
+  clubMemberships ClubMember[]
+}
+
+model Match {
+  id               String             @id @default(uuid())
+  type             String             // "Singles" or "Doubles"
+  teamA            String             // e.g. "Team A"
+  teamB            String             // e.g. "Team B"
+  scoreA           Int                @default(0)
+  scoreB           Int                @default(0)
+  status           String             @default("IN_PROGRESS") // IN_PROGRESS, COMPLETED
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  participants     MatchParticipant[]
+  rallies          Rally[]
+  tournamentMatch TournamentMatch?
+
+  clubId           String?
+  club             Club?             @relation(fields: [clubId], references: [id])
+
+  // Crucial for polling optimization
+  @@index([status, updatedAt(sort: Desc)])
+  @@index([clubId])
+}
+
+model MatchParticipant {
+  id       String @id @default(uuid())
+  matchId  String
+  match    Match  @relation(fields: [matchId], references: [id])
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id])
+  team     String // "A" or "B"
+  eloChange Int?  // Tracks the rating change (+15, -12) after match completes
+
+  @@unique([matchId, playerId])
+  @@index([playerId])
+}
+
+model Rally {
+  id                    String   @id @default(uuid())
+  matchId               String
+  match                 Match    @relation(fields: [matchId], references: [id])
+  scoringTeam           String   // "A" or "B"
+  scoringPlayer         String   // playerId
+  shotType             String   // "Smash", "Drop", "Clear", "Net shot", "Opponent error"
+  opponentMistakePlayer String?   // playerId if it was a mistake
+  timestamp             DateTime @default(now())
+
+  @@index([matchId])
+  @@index([scoringPlayer])
+}
+
+model Tournament {
+  id        String   @id @default(uuid())
+  name      String
+  type      String   // "Singles" or "Doubles"
+  format    String   // "Round Robin", "Knockout", "Hybrid"
+  status    String   @default("ACTIVE") // ACTIVE, FINISHED
+  stage     String   @default("LEAGUE") // LEAGUE, KNOCKOUT
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  participants TournamentPlayer[]
+  matches      TournamentMatch[]
+  winnerId     String?
+
+  @@index([status])
+}
+
+model TournamentPlayer {
+  id           String     @id @default(uuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  playerId     String
+  player       Player     @relation(fields: [playerId], references: [id])
+
+  @@unique([tournamentId, playerId])
+}
+
+model TournamentMatch {
+  id           String     @id @default(uuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  matchId      String?    @unique
+  match        Match?     @relation(fields: [matchId], references: [id])
+  
+  round        Int        @default(0)
+  teamAName    String
+  teamBName    String
+  playerAIds   String[]   @default([])
+  playerBIds   String[]   @default([])
+  scoreA       Int        @default(0)
+  scoreB       Int        @default(0)
+  winnerTeam   String?    // "A" or "B"
+  status       String     @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED
+
+  @@index([tournamentId])
+}
+
+model Club {
+  id          String       @id @default(uuid())
+  name        String
+  description String?
+  joinCode    String       @unique
+  ownerId     String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  members     ClubMember[]
+  matches     Match[]
+
+  @@index([ownerId])
+}
+
+model ClubMember {
+  id        String   @id @default(uuid())
+  clubId    String
+  club      Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  role      String   @default("MEMBER") // ADMIN, MEMBER
+  joinedAt  DateTime @default(now())
+
+  @@unique([clubId, playerId])
+  @@index([playerId])
+}
+
