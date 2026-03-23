@@ -36,11 +36,34 @@ export const createTournament = async (req: Request, res: Response) => {
       }
     });
 
-    const teams = tournament.participants.map((p: any) => ({
-      id: p.playerId,
-      name: p.player.user.name,
-      playerIds: [p.playerId]
-    }));
+    let teams: any[] = [];
+    if (type === 'Doubles') {
+      let teamIndex = 1;
+      for (let i = 0; i < tournament.participants.length; i += 2) {
+        const p1 = tournament.participants[i];
+        const p2 = tournament.participants[i + 1];
+        if (p2) {
+          teams.push({
+            id: `team_${teamIndex}`,
+            name: `${p1.player.user.name.split(' ')[0]} & ${p2.player.user.name.split(' ')[0]}`,
+            playerIds: [p1.playerId, p2.playerId]
+          });
+        } else {
+          teams.push({
+            id: `team_${teamIndex}`,
+            name: p1.player.user.name,
+            playerIds: [p1.playerId]
+          });
+        }
+        teamIndex++;
+      }
+    } else {
+      teams = tournament.participants.map((p: any) => ({
+        id: p.playerId,
+        name: p.player.user.name,
+        playerIds: [p.playerId]
+      }));
+    }
 
     const matchesData: TournamentMatchData[] = [];
 
@@ -60,22 +83,23 @@ export const createTournament = async (req: Request, res: Response) => {
       }
     } else {
       const numRounds = Math.ceil(Math.log2(teams.length));
-      const totalMatches = Math.pow(2, numRounds) - 1;
-      for (let i = 0; i < totalMatches; i++) {
-        const round = Math.floor(Math.log2(totalMatches - i + 1)) - 1;
-        matchesData.push({
-          tournamentId: tournament.id,
-          round: Math.max(0, round),
-          matchIndex: i,
-          teamAName: '',
-          teamBName: '',
-          playerAIds: [],
-          playerBIds: [],
-          status: 'PENDING',
-          winnerTeam: null,
-          scoreA: 0,
-          scoreB: 0,
-        });
+      for (let r = numRounds - 1; r >= 0; r--) {
+        const matchesInRound = Math.pow(2, r);
+        for (let m = 0; m < matchesInRound; m++) {
+          matchesData.push({
+            tournamentId: tournament.id,
+            round: r,
+            matchIndex: m,
+            teamAName: '',
+            teamBName: '',
+            playerAIds: [],
+            playerBIds: [],
+            status: 'PENDING',
+            winnerTeam: null,
+            scoreA: 0,
+            scoreB: 0,
+          });
+        }
       }
       
       const firstRoundMatches = matchesData.filter(m => m.round === numRounds - 1);
@@ -274,24 +298,55 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
     if (tournament.format === 'Knockout' || tournament.stage === 'KNOCKOUT') {
       const currentMatch = tournament.matches.find((m: any) => m.id === matchId);
       if (currentMatch) {
-        const nextRound = currentMatch.round - 1;
-        if (nextRound >= 0) {
-          const roundMatches = tournament.matches.filter((m: any) => m.round === currentMatch.round);
-          const matchIdx = roundMatches.findIndex((m: any) => m.id === matchId);
-          const nextRoundMatches = tournament.matches.filter((m: any) => m.round === nextRound);
-          const nextMatch = nextRoundMatches[Math.floor(matchIdx / 2)];
-          
-          if (nextMatch) {
-            const winnerName = winnerTeam === 'A' ? currentMatch.teamAName : currentMatch.teamBName;
-            const winnerIds = winnerTeam === 'A' ? currentMatch.playerAIds : currentMatch.playerBIds;
-            await prisma.tournamentMatch.update({
-              where: { id: nextMatch.id },
-              data: { 
-                [matchIdx % 2 === 0 ? 'teamAName' : 'teamBName']: winnerName,
-                [matchIdx % 2 === 0 ? 'playerAIds' : 'playerBIds']: winnerIds
-              }
-            });
+        if (currentMatch.round === 0) {
+          // Final match completed! Auto-finish tournament
+          const winningIds = winnerTeam === 'A' ? currentMatch.playerAIds : currentMatch.playerBIds;
+          await prisma.tournament.update({
+             where: { id },
+             data: {
+               status: 'FINISHED',
+               winnerId: winningIds?.[0] || null
+             }
+          });
+        } else {
+          const nextRound = currentMatch.round - 1;
+          if (nextRound >= 0) {
+            const roundMatches = tournament.matches.filter((m: any) => m.round === currentMatch.round);
+            const matchIdx = roundMatches.findIndex((m: any) => m.id === matchId);
+            const nextRoundMatches = tournament.matches.filter((m: any) => m.round === nextRound);
+            const nextMatch = nextRoundMatches[Math.floor(matchIdx / 2)];
+            
+            if (nextMatch) {
+              const winnerName = winnerTeam === 'A' ? currentMatch.teamAName : currentMatch.teamBName;
+              const winnerIds = winnerTeam === 'A' ? currentMatch.playerAIds : currentMatch.playerBIds;
+              await prisma.tournamentMatch.update({
+                where: { id: nextMatch.id },
+                data: { 
+                  [matchIdx % 2 === 0 ? 'teamAName' : 'teamBName']: winnerName,
+                  [matchIdx % 2 === 0 ? 'playerAIds' : 'playerBIds']: winnerIds
+                }
+              });
+            }
           }
+        }
+      }
+    }
+
+    // Round Robin Auto-finish
+    if (tournament.format === 'Round Robin') {
+      const allDone = tournament.matches.every((m: any) => m.id === matchId ? true : m.status === 'COMPLETED');
+      if (allDone) {
+        const stats: Record<string, any> = {};
+        tournament.participants.forEach((p: any) => { stats[p.playerId] = { wins: 0 } });
+        tournament.matches.forEach((m: any) => {
+          let winIds = null;
+          if (m.id === matchId) winIds = winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+          else if (m.status === 'COMPLETED') winIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+          winIds?.forEach((pid: string) => { if (stats[pid]) stats[pid].wins++; });
+        });
+        const topPlayer = Object.entries(stats).sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+        if (topPlayer) {
+          await prisma.tournament.update({ where: { id }, data: { status: 'FINISHED', winnerId: topPlayer[0] } });
         }
       }
     }
