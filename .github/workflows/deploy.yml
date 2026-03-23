@@ -1,0 +1,38 @@
+name: Deploy Backend to Azure VM
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Azure VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd ~/badminton_live_backend/Badminton
+
+            echo "Pulling latest code..."
+            git pull origin master
+
+            echo "Stopping old container..."
+            sudo docker stop badminton-api || true
+            sudo docker rm badminton-api || true
+
+            echo "Rebuilding Docker image..."
+            sudo docker build -t badminton-backend .
+
+            echo "Starting new container..."
+            sudo docker run -d \
+              -p 4000:4000 \
+              --env-file .env \
+              --restart always \
+              --name badminton-api \
+              badminton-backend

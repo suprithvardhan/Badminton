@@ -48,46 +48,14 @@ router.get('/:id', async (req, res) => {
         OR: [{ id }, { userId: id }]
       },
       include: {
-        user: { select: { name: true, email: true, avatar: true } },
-        participants: {
-          include: {
-            match: {
-              include: { rallies: true }
-            }
-          }
-        }
+        user: { select: { name: true, email: true, avatar: true } }
       }
     });
 
     if (!player) return res.status(404).json({ error: 'Player not found' });
 
-    // Compute stats on the fly for now (optimize later with a view or materialized stats)
-    let totalSmashes = 0, totalDrops = 0;
-    let errorsCommitted = 0, errorsForced = 0;
-
-    player.participants.forEach((p: any) => {
-      p.match.rallies.forEach((r: any) => {
-        if (r.scoringPlayer === player.id) {
-          if (r.shotType === 'Smash') totalSmashes++;
-          if (r.shotType === 'Drop') totalDrops++;
-          errorsForced++;
-        }
-        if (r.opponentMistakePlayer === player.id) errorsCommitted++;
-      });
-    });
-
-    const response = {
-      ...player,
-      smashPoints: totalSmashes,
-      dropPoints: totalDrops,
-      errorsCommitted,
-      errorsForced
-    };
-    
-    // Remove heavy participants from final response
-    delete (response as any).participants;
-
-    res.json(response);
+    // Instantly return the pre-calculated materialized database columns natively.
+    res.json(player);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
