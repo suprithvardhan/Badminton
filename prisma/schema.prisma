@@ -120,6 +120,7 @@ model TournamentMatch {
   match        Match?     @relation(fields: [matchId], references: [id])
   
   round        Int        @default(0)
+  matchIndex   Int        @default(0)
   teamAName    String
   teamBName    String
   playerAIds   String[]   @default([])

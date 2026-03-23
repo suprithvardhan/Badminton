@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma';
 interface TournamentMatchData {
   tournamentId: string;
   round: number;
+  matchIndex: number;
   teamAName: string;
   teamBName: string;
   playerAIds: string[];
@@ -49,6 +50,7 @@ export const createTournament = async (req: Request, res: Response) => {
           matchesData.push({
             tournamentId: tournament.id,
             round: 0,
+            matchIndex: i * teams.length + j,
             teamAName: teams[i].name,
             teamBName: teams[j].name,
             playerAIds: teams[i].playerIds,
@@ -64,6 +66,7 @@ export const createTournament = async (req: Request, res: Response) => {
         matchesData.push({
           tournamentId: tournament.id,
           round: Math.max(0, round),
+          matchIndex: i,
           teamAName: '',
           teamBName: '',
           playerAIds: [],
@@ -125,7 +128,10 @@ export const createTournament = async (req: Request, res: Response) => {
 
     const updatedTournament = await prisma.tournament.findUnique({
       where: { id: tournament.id },
-      include: { matches: true, participants: { include: { player: { include: { user: true } } } } }
+      include: { 
+        matches: { orderBy: [{ round: 'desc' }, { matchIndex: 'asc' }] }, 
+        participants: { include: { player: { include: { user: true } } } } 
+      }
     });
 
     res.status(201).json(updatedTournament);
@@ -138,7 +144,7 @@ export const getTournaments = async (req: Request, res: Response) => {
   try {
     const tournaments = await prisma.tournament.findMany({
       include: { 
-        matches: true, 
+        matches: { orderBy: [{ round: 'desc' }, { matchIndex: 'asc' }] }, 
         participants: { include: { player: { include: { user: true } } } } 
       },
       orderBy: { createdAt: 'desc' }
@@ -155,7 +161,7 @@ export const getTournamentById = async (req: Request, res: Response) => {
     const tournament = await prisma.tournament.findUnique({
       where: { id },
       include: { 
-        matches: { orderBy: { round: 'desc' } }, 
+        matches: { orderBy: [{ round: 'desc' }, { matchIndex: 'asc' }] }, 
         participants: { include: { player: { include: { user: true } } } } 
       }
     });
@@ -186,7 +192,7 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
     const tournament = await prisma.tournament.findUnique({
       where: { id },
       include: { 
-        matches: true, 
+        matches: { orderBy: [{ round: 'desc' }, { matchIndex: 'asc' }] }, 
         participants: { include: { player: { include: { user: true } } } } 
       }
     });
@@ -228,6 +234,7 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
           knockoutMatches.push({
             tournamentId: tournament.id,
             round: 1,
+            matchIndex: 0,
             teamAName: top4[0].name,
             teamBName: top4[3]?.name || 'BYE',
             playerAIds: [top4[0].id],
@@ -239,6 +246,7 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
           knockoutMatches.push({
             tournamentId: tournament.id,
             round: 1,
+            matchIndex: 1,
             teamAName: top4[1]?.name || 'TBD',
             teamBName: top4[2]?.name || 'TBD',
             playerAIds: top4[1] ? [top4[1].id] : [],
@@ -249,6 +257,7 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
           knockoutMatches.push({
             tournamentId: tournament.id,
             round: 0,
+            matchIndex: 0,
             teamAName: !top4[3] ? top4[0].name : '',
             teamBName: '',
             playerAIds: !top4[3] ? [top4[0].id] : [],
@@ -297,7 +306,6 @@ export const finishTournament = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
 
-    // Determine the winner from standings
     const tournament = await prisma.tournament.findUnique({
       where: { id },
       include: {
@@ -308,25 +316,39 @@ export const finishTournament = async (req: Request, res: Response) => {
 
     if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
 
-    // Calculate winner from standings
-    const stats: Record<string, any> = {};
-    tournament.participants.forEach((p: any) => {
-      stats[p.playerId] = { name: p.player.user.name, wins: 0 };
-    });
-    tournament.matches.forEach((m: any) => {
-      if (m.status === 'COMPLETED') {
-        const winnerIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
-        winnerIds?.forEach((id: string) => { if (stats[id]) stats[id].wins++; });
+    let topPlayerId = null;
+
+    if (tournament.format === 'Round Robin') {
+      const stats: Record<string, any> = {};
+      tournament.participants.forEach((p: any) => {
+        stats[p.playerId] = { name: p.player.user.name, wins: 0 };
+      });
+      tournament.matches.forEach((m: any) => {
+        if (m.status === 'COMPLETED') {
+          const winnerIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+          winnerIds?.forEach((pid: string) => { if (stats[pid]) stats[pid].wins++; });
+        }
+      });
+      const topPlayer = Object.entries(stats)
+        .sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+      if (topPlayer) topPlayerId = topPlayer[0];
+    } else {
+      // Knockout or Hybrid
+      // The final match is round: 0, matchIndex: 0
+      const finalMatch = tournament.matches.find((m: any) => m.round === 0 && m.matchIndex === 0 && m.status === 'COMPLETED');
+      if (finalMatch) {
+         const winnerIds = finalMatch.winnerTeam === 'A' ? finalMatch.playerAIds : finalMatch.playerBIds;
+         if (winnerIds && winnerIds.length > 0) {
+            topPlayerId = winnerIds[0];
+         }
       }
-    });
-    const topPlayer = Object.entries(stats)
-      .sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+    }
 
     await prisma.tournament.update({
       where: { id },
       data: {
         status: 'FINISHED',
-        winnerId: topPlayer ? topPlayer[0] : null,
+        winnerId: topPlayerId,
       }
     });
 
