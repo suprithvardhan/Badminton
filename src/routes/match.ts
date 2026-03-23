@@ -42,16 +42,22 @@ router.get('/active', async (req, res) => {
 // Get completed matches (history)
 router.get('/history', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(5, parseInt(req.query.limit as string) || 20));
+
+    const total = await prisma.match.count({ where: { status: 'COMPLETED' } });
     const matches = await prisma.match.findMany({
       where: { status: 'COMPLETED' },
       orderBy: { updatedAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
       include: {
         participants: {
           include: { player: { include: { user: { select: { name: true } } } } }
         }
       }
     });
-    res.json(matches);
+    res.json({ data: matches, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal error' });

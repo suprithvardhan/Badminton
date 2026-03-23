@@ -19,20 +19,86 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// Get player leaderboard
+// Get player leaderboard with pagination, search, and position change calculation
 router.get('/leaderboard', async (req, res) => {
   try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(5, parseInt(req.query.limit as string) || 10));
+    const search = (req.query.search as string || '').trim();
+
+    const whereClause = search
+      ? { user: { name: { contains: search, mode: 'insensitive' as const } } }
+      : {};
+
+    const totalCount = await prisma.player.count({ where: whereClause });
+
     const players = await prisma.player.findMany({
-      orderBy: [
-        { elo: 'desc' },
-        { wins: 'desc' }
-      ],
+      where: whereClause,
+      orderBy: [{ elo: 'desc' }, { wins: 'desc' }],
       include: {
-        user: { select: { name: true, avatar: true } }
+        user: { select: { name: true, avatar: true } },
+        participants: {
+          orderBy: { match: { createdAt: 'desc' } },
+          take: 1,
+          select: { eloChange: true }
+        }
       },
-      take: 50
+      skip: (page - 1) * limit,
+      take: limit,
     });
-    res.json(players);
+
+    // For global position change: fetch all player IDs and their last eloChange  
+    const allPlayers = await prisma.player.findMany({
+      where: whereClause,
+      orderBy: [{ elo: 'desc' }, { wins: 'desc' }],
+      select: {
+        id: true,
+        elo: true,
+        wins: true,
+        participants: {
+          orderBy: { match: { createdAt: 'desc' } },
+          take: 1,
+          select: { eloChange: true }
+        }
+      }
+    });
+
+    // Compute previous ranks by reversing last eloChange
+    const withPrevElo = allPlayers.map((p: any) => {
+      const lastChange = p.participants?.[0]?.eloChange ?? 0;
+      return { id: p.id, prevElo: p.elo - lastChange };
+    });
+    withPrevElo.sort((a: any, b: any) => b.prevElo - a.prevElo);
+    const prevRankMap: Record<string, number> = {};
+    withPrevElo.forEach((p: any, i: number) => { prevRankMap[p.id] = i + 1; });
+
+    const currentRankOffset = (page - 1) * limit;
+    const result = players.map((p: any, i: number) => {
+      const currentRank = currentRankOffset + i + 1;
+      const prevRank = prevRankMap[p.id] ?? currentRank;
+      const positionChange = prevRank - currentRank; // positive = moved up
+      return {
+        id: p.id,
+        elo: p.elo,
+        wins: p.wins,
+        losses: p.losses,
+        matchesPlayed: p.matchesPlayed,
+        smashPoints: p.smashPoints,
+        dropPoints: p.dropPoints,
+        user: p.user,
+        positionChange,
+      };
+    });
+
+    res.json({
+      data: result,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+      }
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });

@@ -74,22 +74,49 @@ export const createTournament = async (req: Request, res: Response) => {
           scoreB: 0,
         });
       }
-      // Seed first round
+      
       const firstRoundMatches = matchesData.filter(m => m.round === numRounds - 1);
-      for (let i = 0; i < teams.length; i += 2) {
-        const match = firstRoundMatches[Math.floor(i / 2)];
-        if (match) {
-          match.teamAName = teams[i].name;
-          match.playerAIds = teams[i].playerIds;
-          if (teams[i + 1]) {
-            match.teamBName = teams[i + 1].name;
-            match.playerBIds = teams[i + 1].playerIds;
-          } else {
-            match.teamBName = 'BYE';
-            match.status = 'COMPLETED';
-            match.winnerTeam = 'A';
-            match.scoreA = 21;
-          }
+      const byes = Math.pow(2, numRounds) - teams.length;
+      
+      let teamIdx = 0;
+      for (let m = 0; m < firstRoundMatches.length; m++) {
+        const match = firstRoundMatches[m];
+        match.teamAName = teams[teamIdx].name;
+        match.playerAIds = teams[teamIdx].playerIds;
+        teamIdx++;
+        
+        if (m >= firstRoundMatches.length - byes) {
+          match.teamBName = 'BYE';
+          match.status = 'COMPLETED';
+          match.winnerTeam = 'A';
+          match.scoreA = 21;
+        } else {
+          match.teamBName = teams[teamIdx].name;
+          match.playerBIds = teams[teamIdx].playerIds;
+          teamIdx++;
+        }
+      }
+      
+      // Cascade BYEs downwards structurally
+      for (let r = numRounds - 1; r > 0; r--) {
+        const currentRoundMatches = matchesData.filter(m => m.round === r);
+        const nextRoundMatches = matchesData.filter(m => m.round === r - 1);
+        
+        for (let m = 0; m < currentRoundMatches.length; m++) {
+           const match = currentRoundMatches[m];
+           if (match.status === 'COMPLETED') {
+             const advanceName = match.winnerTeam === 'A' ? match.teamAName : match.teamBName;
+             const advanceIds = match.winnerTeam === 'A' ? match.playerAIds : match.playerBIds;
+             const nextMatchIndex = Math.floor(m / 2);
+             const nextMatch = nextRoundMatches[nextMatchIndex];
+             if (m % 2 === 0) {
+                nextMatch.teamAName = advanceName;
+                nextMatch.playerAIds = advanceIds;
+             } else {
+                nextMatch.teamBName = advanceName;
+                nextMatch.playerBIds = advanceIds;
+             }
+           }
         }
       }
     }
@@ -236,13 +263,13 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
 
     // Knockout progression
     if (tournament.format === 'Knockout' || tournament.stage === 'KNOCKOUT') {
-      const currentMatch = tournament.matches.find(m => m.id === matchId);
+      const currentMatch = tournament.matches.find((m: any) => m.id === matchId);
       if (currentMatch) {
         const nextRound = currentMatch.round - 1;
         if (nextRound >= 0) {
-          const roundMatches = tournament.matches.filter(m => m.round === currentMatch.round);
-          const matchIdx = roundMatches.findIndex(m => m.id === matchId);
-          const nextRoundMatches = tournament.matches.filter(m => m.round === nextRound);
+          const roundMatches = tournament.matches.filter((m: any) => m.round === currentMatch.round);
+          const matchIdx = roundMatches.findIndex((m: any) => m.id === matchId);
+          const nextRoundMatches = tournament.matches.filter((m: any) => m.round === nextRound);
           const nextMatch = nextRoundMatches[Math.floor(matchIdx / 2)];
           
           if (nextMatch) {
@@ -259,6 +286,49 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
         }
       }
     }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const finishTournament = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+
+    // Determine the winner from standings
+    const tournament = await prisma.tournament.findUnique({
+      where: { id },
+      include: {
+        matches: true,
+        participants: { include: { player: { include: { user: true } } } }
+      }
+    });
+
+    if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+
+    // Calculate winner from standings
+    const stats: Record<string, any> = {};
+    tournament.participants.forEach((p: any) => {
+      stats[p.playerId] = { name: p.player.user.name, wins: 0 };
+    });
+    tournament.matches.forEach((m: any) => {
+      if (m.status === 'COMPLETED') {
+        const winnerIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+        winnerIds?.forEach((id: string) => { if (stats[id]) stats[id].wins++; });
+      }
+    });
+    const topPlayer = Object.entries(stats)
+      .sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+
+    await prisma.tournament.update({
+      where: { id },
+      data: {
+        status: 'FINISHED',
+        winnerId: topPlayer ? topPlayer[0] : null,
+      }
+    });
 
     res.json({ success: true });
   } catch (error: any) {
