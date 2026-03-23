@@ -301,11 +301,25 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
         if (currentMatch.round === 0) {
           // Final match completed! Auto-finish tournament
           const winningIds = winnerTeam === 'A' ? currentMatch.playerAIds : currentMatch.playerBIds;
+          const winnerId = winningIds?.[0] || null;
+          
+          // Calculate Awards
+          const fullTournament = await prisma.tournament.findUnique({
+            where: { id },
+            include: {
+              matches: { include: { match: { include: { rallies: true } } } },
+              participants: { include: { player: { include: { user: true } } } }
+            }
+          });
+
+          const awards = calculateAwards(fullTournament);
+
           await prisma.tournament.update({
              where: { id },
              data: {
                status: 'FINISHED',
-               winnerId: winningIds?.[0] || null
+               winnerId,
+               awards
              }
           });
         } else {
@@ -346,7 +360,23 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
         });
         const topPlayer = Object.entries(stats).sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
         if (topPlayer) {
-          await prisma.tournament.update({ where: { id }, data: { status: 'FINISHED', winnerId: topPlayer[0] } });
+          const fullTournament = await prisma.tournament.findUnique({
+            where: { id },
+            include: {
+              matches: { include: { match: { include: { rallies: true } } } },
+              participants: { include: { player: { include: { user: true } } } }
+            }
+          });
+          const awards = calculateAwards(fullTournament);
+
+          await prisma.tournament.update({ 
+            where: { id }, 
+            data: { 
+              status: 'FINISHED', 
+              winnerId: topPlayer[0],
+              awards
+            } 
+          });
         }
       }
     }
@@ -399,11 +429,23 @@ export const finishTournament = async (req: Request, res: Response) => {
       }
     }
 
+    // Calculate Awards
+    const fullTournament = await prisma.tournament.findUnique({
+      where: { id },
+      include: {
+        matches: { include: { match: { include: { rallies: true } } } },
+        participants: { include: { player: { include: { user: true } } } }
+      }
+    });
+
+    const awards = calculateAwards(fullTournament);
+
     await prisma.tournament.update({
       where: { id },
       data: {
         status: 'FINISHED',
         winnerId: topPlayerId,
+        awards: awards as any
       }
     });
 
@@ -411,4 +453,37 @@ export const finishTournament = async (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
+};
+
+const calculateAwards = (tournament: any) => {
+  const playerStats: Record<string, any> = {};
+  tournament.participants.forEach((p: any) => {
+    playerStats[p.playerId] = { points: 0, smashes: 0, drops: 0, errors: 0, name: p.player.user.name };
+  });
+
+  tournament.matches.forEach((tm: any) => {
+    if (tm.match && tm.match.rallies) {
+      tm.match.rallies.forEach((rally: any) => {
+        if (rally.scoringPlayer && playerStats[rally.scoringPlayer]) {
+          playerStats[rally.scoringPlayer].points++;
+          if (rally.shotType === 'Smash') playerStats[rally.scoringPlayer].smashes++;
+          if (rally.shotType === 'Drop') playerStats[rally.scoringPlayer].drops++;
+        }
+        if (rally.opponentMistakePlayer && playerStats[rally.opponentMistakePlayer]) {
+          playerStats[rally.opponentMistakePlayer].errors++;
+        }
+      });
+    }
+  });
+
+  const getTop = (key: string) => {
+    return Object.values(playerStats).sort((a, b) => b[key] - a[key])[0]?.name || 'TBD';
+  };
+
+  return {
+    mvp: getTop('points'),
+    smashKing: getTop('smashes'),
+    dropMaster: getTop('drops'),
+    errorKing: getTop('errors')
+  };
 };
