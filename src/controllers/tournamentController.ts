@@ -36,34 +36,53 @@ export const createTournament = async (req: Request, res: Response) => {
       }
     });
 
+    // 1. Fetch Elo for all players to enable Seeding
+    const players = await prisma.player.findMany({
+      where: { id: { in: playerIds } },
+      include: { user: true }
+    });
+
     let teams: any[] = [];
     if (type === 'Doubles') {
       let teamIndex = 1;
+      // Pair players sequentially as before, but we'll sort these "teams" by Elo later
       for (let i = 0; i < tournament.participants.length; i += 2) {
-        const p1 = tournament.participants[i];
-        const p2 = tournament.participants[i + 1];
-        if (p2) {
+        const p1 = tournament.participants[i] as any;
+        const p2 = tournament.participants[i + 1] as any;
+        
+        const player1Obj = players.find((p: any) => p.id === p1.playerId);
+        const player2Obj = p2 ? players.find((p: any) => p.id === p2.playerId) : null;
+
+        if (player2Obj) {
           teams.push({
             id: `team_${teamIndex}`,
-            name: `${p1.player.user.name.split(' ')[0]} & ${p2.player.user.name.split(' ')[0]}`,
-            playerIds: [p1.playerId, p2.playerId]
+            name: `${player1Obj?.user?.name.split(' ')[0]} & ${player2Obj?.user?.name.split(' ')[0]}`,
+            playerIds: [p1.playerId, p2.playerId],
+            avgElo: ((player1Obj?.elo || 1200) + (player2Obj?.elo || 1200)) / 2
           });
         } else {
           teams.push({
             id: `team_${teamIndex}`,
-            name: p1.player.user.name,
-            playerIds: [p1.playerId]
+            name: player1Obj?.user?.name || 'Unknown',
+            playerIds: [p1.playerId],
+            avgElo: player1Obj?.elo || 1200
           });
         }
         teamIndex++;
       }
-    } else {
-      teams = tournament.participants.map((p: any) => ({
-        id: p.playerId,
-        name: p.player.user.name,
-        playerIds: [p.playerId]
-      }));
+      teams = tournament.participants.map((p: any) => {
+        const pObj = players.find((px: any) => px.id === p.playerId);
+        return {
+          id: p.playerId,
+          name: pObj?.user?.name || 'Unknown',
+          playerIds: [p.playerId],
+          avgElo: pObj?.elo || 1200
+        };
+      });
     }
+
+    // 2. Sort teams by Elo for Seeding
+    teams.sort((a, b) => b.avgElo - a.avgElo);
 
     const matchesData: TournamentMatchData[] = [];
 
@@ -83,6 +102,25 @@ export const createTournament = async (req: Request, res: Response) => {
       }
     } else {
       const numRounds = Math.ceil(Math.log2(teams.length));
+      const totalSlots = Math.pow(2, numRounds);
+      
+      // Standard Seeding Order Generation (e.g. [1, 8, 5, 4, 3, 6, 7, 2])
+      const getSeedOrder = (n: number) => {
+        let list = [1, 2];
+        while (list.length < n) {
+          let nextList = [];
+          for (let i = 0; i < list.length; i++) {
+            nextList.push(list[i]);
+            nextList.push(list.length * 2 + 1 - list[i]);
+          }
+          list = nextList;
+        }
+        return list;
+      };
+
+      const seedOrder = getSeedOrder(totalSlots);
+      
+      // Initialize all matches
       for (let r = numRounds - 1; r >= 0; r--) {
         const matchesInRound = Math.pow(2, r);
         for (let m = 0; m < matchesInRound; m++) {
@@ -103,28 +141,38 @@ export const createTournament = async (req: Request, res: Response) => {
       }
       
       const firstRoundMatches = matchesData.filter(m => m.round === numRounds - 1);
-      const byes = Math.pow(2, numRounds) - teams.length;
       
-      let teamIdx = 0;
-      for (let m = 0; m < firstRoundMatches.length; m++) {
-        const match = firstRoundMatches[m];
-        match.teamAName = teams[teamIdx].name;
-        match.playerAIds = teams[teamIdx].playerIds;
-        teamIdx++;
-        
-        if (m >= firstRoundMatches.length - byes) {
+      // Assign teams to first round based on seedOrder
+      for (let i = 0; i < totalSlots; i += 2) {
+        const seedA = seedOrder[i];
+        const seedB = seedOrder[i + 1];
+        const matchIdx = Math.floor(i / 2);
+        const match = firstRoundMatches[matchIdx];
+
+        const teamA = teams[seedA - 1]; // seed is 1-indexed
+        const teamB = teams[seedB - 1];
+
+        if (teamA) {
+          match.teamAName = teamA.name;
+          match.playerAIds = teamA.playerIds;
+        } else {
+          match.teamAName = 'BYE';
+          match.status = 'COMPLETED';
+          match.winnerTeam = 'B';
+        }
+
+        if (teamB) {
+          match.teamBName = teamB.name;
+          match.playerBIds = teamB.playerIds;
+        } else {
           match.teamBName = 'BYE';
           match.status = 'COMPLETED';
           match.winnerTeam = 'A';
-          match.scoreA = 21;
-        } else {
-          match.teamBName = teams[teamIdx].name;
-          match.playerBIds = teams[teamIdx].playerIds;
-          teamIdx++;
+          match.scoreA = 21; // auto-win
         }
       }
       
-      // Cascade BYEs downwards structurally
+      // Cascade BYEs downward
       for (let r = numRounds - 1; r > 0; r--) {
         const currentRoundMatches = matchesData.filter(m => m.round === r);
         const nextRoundMatches = matchesData.filter(m => m.round === r - 1);
@@ -230,21 +278,39 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
         // Calculate Standings
         const stats: Record<string, any> = {};
         tournament.participants.forEach((p: any) => {
-          stats[p.playerId] = { name: p.player.user.name, wins: 0, matches: 0 };
+          stats[p.playerId] = { name: p.player.user.name, wins: 0, matches: 0, pointsScored: 0, pointsConceded: 0 };
         });
 
         tournament.matches.forEach((m: any) => {
           if (m.status !== 'COMPLETED') return;
           const winnerIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+          const loserIds = m.winnerTeam === 'A' ? m.playerBIds : m.playerAIds;
           const allPlayerIds = [...m.playerAIds, ...m.playerBIds];
 
           allPlayerIds.forEach((pid: string) => { if (stats[pid]) stats[pid].matches++; });
-          winnerIds.forEach((wid: string) => { if (stats[wid]) stats[wid].wins++; });
+          winnerIds.forEach((wid: string) => { 
+            if (stats[wid]) {
+              stats[wid].wins++; 
+              stats[wid].pointsScored += (m.winnerTeam === 'A' ? m.scoreA : m.scoreB);
+              stats[wid].pointsConceded += (m.winnerTeam === 'A' ? m.scoreB : m.scoreA);
+            }
+          });
+          loserIds.forEach((lid: string) => {
+            if (stats[lid]) {
+              stats[lid].pointsScored += (m.winnerTeam === 'A' ? m.scoreB : m.scoreA);
+              stats[lid].pointsConceded += (m.winnerTeam === 'A' ? m.scoreA : m.scoreB);
+            }
+          });
         });
 
         const top4 = Object.entries(stats)
           .map(([pid, s]: any) => ({ id: pid, ...s }))
-          .sort((a, b) => b.wins - a.wins)
+          .sort((a, b) => {
+            if (b.wins !== a.wins) return b.wins - a.wins;
+            const diffA = a.pointsScored - a.pointsConceded;
+            const diffB = b.pointsScored - b.pointsConceded;
+            return diffB - diffA;
+          })
           .slice(0, 4);
 
         if (top4.length >= 2) {
@@ -351,14 +417,47 @@ export const updateTournamentMatch = async (req: Request, res: Response) => {
       const allDone = tournament.matches.every((m: any) => m.id === matchId ? true : m.status === 'COMPLETED');
       if (allDone) {
         const stats: Record<string, any> = {};
-        tournament.participants.forEach((p: any) => { stats[p.playerId] = { wins: 0 } });
+        tournament.participants.forEach((p: any) => { stats[p.playerId] = { wins: 0, pointsScored: 0, pointsConceded: 0 } });
         tournament.matches.forEach((m: any) => {
           let winIds = null;
-          if (m.id === matchId) winIds = winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
-          else if (m.status === 'COMPLETED') winIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
-          winIds?.forEach((pid: string) => { if (stats[pid]) stats[pid].wins++; });
+          let currentScoreA = m.scoreA;
+          let currentScoreB = m.scoreB;
+          let currentWinnerTeam = m.winnerTeam;
+
+          if (m.id === matchId) {
+            winIds = winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+            currentWinnerTeam = winnerTeam;
+            currentScoreA = scoreA;
+            currentScoreB = scoreB;
+          } else if (m.status === 'COMPLETED') {
+            winIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
+          }
+
+          if (winIds) {
+            winIds.forEach((pid: string) => { if (stats[pid]) stats[pid].wins++; });
+            
+            // Assign points to all participants in the match
+            m.playerAIds.forEach((pid: string) => {
+              if (stats[pid]) {
+                stats[pid].pointsScored += currentScoreA;
+                stats[pid].pointsConceded += currentScoreB;
+              }
+            });
+            m.playerBIds.forEach((pid: string) => {
+              if (stats[pid]) {
+                stats[pid].pointsScored += currentScoreB;
+                stats[pid].pointsConceded += currentScoreA;
+              }
+            });
+          }
         });
-        const topPlayer = Object.entries(stats).sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+
+        const topPlayer = Object.entries(stats).sort((a: any, b: any) => {
+          if (b[1].wins !== a[1].wins) return b[1].wins - a[1].wins;
+          const diffA = a[1].pointsScored - a[1].pointsConceded;
+          const diffB = b[1].pointsScored - b[1].pointsConceded;
+          return diffB - diffA;
+        })[0];
         if (topPlayer) {
           const fullTournament = await prisma.tournament.findUnique({
             where: { id },
@@ -406,16 +505,34 @@ export const finishTournament = async (req: Request, res: Response) => {
     if (tournament.format === 'Round Robin') {
       const stats: Record<string, any> = {};
       tournament.participants.forEach((p: any) => {
-        stats[p.playerId] = { name: p.player.user.name, wins: 0 };
+        stats[p.playerId] = { name: p.player.user.name, wins: 0, pointsScored: 0, pointsConceded: 0 };
       });
       tournament.matches.forEach((m: any) => {
         if (m.status === 'COMPLETED') {
           const winnerIds = m.winnerTeam === 'A' ? m.playerAIds : m.playerBIds;
           winnerIds?.forEach((pid: string) => { if (stats[pid]) stats[pid].wins++; });
+
+          m.playerAIds.forEach((pid: string) => {
+            if (stats[pid]) {
+              stats[pid].pointsScored += m.scoreA;
+              stats[pid].pointsConceded += m.scoreB;
+            }
+          });
+          m.playerBIds.forEach((pid: string) => {
+            if (stats[pid]) {
+              stats[pid].pointsScored += m.scoreB;
+              stats[pid].pointsConceded += m.scoreA;
+            }
+          });
         }
       });
       const topPlayer = Object.entries(stats)
-        .sort(([, a]: any, [, b]: any) => b.wins - a.wins)[0];
+        .sort((a: any, b: any) => {
+          if (b[1].wins !== a[1].wins) return b[1].wins - a[1].wins;
+          const diffA = a[1].pointsScored - a[1].pointsConceded;
+          const diffB = b[1].pointsScored - b[1].pointsConceded;
+          return diffB - diffA;
+        })[0];
       if (topPlayer) topPlayerId = topPlayer[0];
     } else {
       // Knockout or Hybrid

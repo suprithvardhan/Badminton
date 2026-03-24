@@ -150,19 +150,47 @@ router.post('/:id/end', authenticateToken, async (req, res) => {
     const actualA = winnerTeam === 'A' ? 1 : (winnerTeam === 'B' ? 0 : 0.5);
     const actualB = winnerTeam === 'B' ? 1 : (winnerTeam === 'A' ? 0 : 0.5);
 
-    const eloChangeA = Math.round(K * (actualA - expectedA));
-    const eloChangeB = Math.round(K * (actualB - expectedB));
+    // Margin of Victory (MoV) factor
+    // Minimal win (2 pts diff) has multiplier 1.0. Blowout (21 pts diff) has multiplier ~1.9.
+    const scoreDiff = Math.abs(scoreA - scoreB);
+    const G = 1 + Math.max(0, (scoreDiff - 2) / 21);
 
-    // 2. Update player stats
+    const eloChangeA = Math.round(K * (actualA - expectedA) * G);
+    const eloChangeB = Math.round(K * (actualB - expectedB) * G);
+
+    // 2. Update player stats with Fair Distribution for Doubles
     const transactions = [];
 
-    for (const p of matchAny.participants) {
-      const isWinner = p.team === winnerTeam;
-      const eloChange = p.team === 'A' ? eloChangeA : eloChangeB;
+    // Helper to calculate impact-based distribution
+    const getIndividualEloChange = (p: any, teamPlayers: any[], teamBaseChange: number) => {
+      if (teamPlayers.length <= 1) return teamBaseChange;
 
-      const smashes = matchAny.rallies.filter((r: any) => r.scoringPlayer === p.playerId && r.shotType === 'Smash').length;
-      const drops = matchAny.rallies.filter((r: any) => r.scoringPlayer === p.playerId && r.shotType === 'Drop').length;
-      const errorsCommitted = matchAny.rallies.filter((r: any) => r.opponentMistakePlayer === p.playerId).length;
+      const playerImpacts = teamPlayers.map(tp => {
+        const scored = (match as any).rallies.filter((r: any) => r.scoringPlayer === tp.playerId).length;
+        const errors = (match as any).rallies.filter((r: any) => r.opponentMistakePlayer === tp.playerId).length;
+        return { id: tp.playerId, impact: Math.max(1, scored - errors) }; // Min impact of 1 for fair ratio
+      });
+
+      const totalTeamImpact = playerImpacts.reduce((sum, pi) => sum + pi.impact, 0);
+      const myImpact = playerImpacts.find(pi => pi.id === p.playerId)?.impact || 1;
+
+      // 70% shared base, 30% performance-based
+      const baseShare = teamBaseChange * 0.7;
+      const performanceShare = (teamBaseChange * 0.3 * (myImpact / totalTeamImpact)) * 2; // *2 because 30% of TEAM'S total (2 * 30%)
+      
+      return Math.round(baseShare + performanceShare);
+    };
+
+    for (const p of (match as any).participants) {
+      const isWinner = p.team === winnerTeam;
+      const teamBaseChange = p.team === 'A' ? eloChangeA : eloChangeB;
+      const teamPlayers = p.team === 'A' ? teamAPlayers : teamBPlayers;
+      
+      const eloChange = getIndividualEloChange(p, teamPlayers, teamBaseChange);
+
+      const smashes = (match as any).rallies.filter((r: any) => r.scoringPlayer === p.playerId && r.shotType === 'Smash').length;
+      const drops = (match as any).rallies.filter((r: any) => r.scoringPlayer === p.playerId && r.shotType === 'Drop').length;
+      const errorsCommitted = (match as any).rallies.filter((r: any) => r.opponentMistakePlayer === p.playerId).length;
 
       // Bundle Player Stats Update
       transactions.push(
