@@ -11,6 +11,7 @@ import playerRoutes from './routes/player';
 import matchRoutes from './routes/match';
 import tournamentRoutes from './routes/tournamentRoutes';
 import clubRoutes from './routes/club';
+import adminRoutes from './routes/admin';
 import { configureSocket } from './socket';
 
 const app = express();
@@ -25,6 +26,7 @@ app.use('/api/players', playerRoutes);
 app.use('/api/matches', matchRoutes);
 app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/clubs', clubRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.get('/', (req, res) => {
   res.send('Badminton Platform API is running');

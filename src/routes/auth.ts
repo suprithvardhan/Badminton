@@ -57,6 +57,17 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    // Hardcoded admin override: make sure admin@badminton.com has ADMIN role
+    if (user.email === 'admin@badminton.com' && user.role !== 'ADMIN') {
+      const updatedUser = await prisma.user.update({
+        where: { id: user.id },
+        data: { role: 'ADMIN', plan: 'ELITE' },
+        include: { player: true }
+      });
+      const token = jwt.sign({ id: updatedUser.id }, process.env.JWT_SECRET || 'supersecret_badminton_key_for_dev', { expiresIn: '7d' });
+      return res.json({ user: updatedUser, token });
+    }
+
     const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'supersecret_badminton_key_for_dev', { expiresIn: '7d' });
 
     res.json({ user, token });
