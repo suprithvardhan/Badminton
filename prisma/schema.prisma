@@ -16,10 +16,6 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   player    Player?
-  
-  role      String   @default("USER") // USER, ADMIN
-  plan      String   @default("ROOKIE") // ROOKIE, PRO, ELITE
-  payments  Payment[]
 }
 
 model Player {
@@ -166,13 +162,3 @@ model ClubMember {
   @@index([playerId])
 }
 
-model Payment {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amount    Int
-  plan      String
-  createdAt DateTime @default(now())
-  
-  @@index([userId])
-}
